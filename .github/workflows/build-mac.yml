@@ -1,0 +1,49 @@
+name: Build Mac app
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build DeskCam.app
+        run: |
+          pip install pyinstaller==6.11.1
+          pyinstaller --noconfirm mac/DeskCam.spec
+          codesign --force --deep --sign - dist/DeskCam.app
+
+      - name: Check the app starts and serves its page
+        run: |
+          DESKCAM_HEADLESS=1 dist/DeskCam.app/Contents/MacOS/DeskCam &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8765/settings && break; sleep 1; done
+          curl -sf http://127.0.0.1:8765/ | grep -q '<title>DeskCam</title>'
+          kill $!
+
+      - name: Make DeskCam.dmg
+        run: |
+          mkdir dmg
+          cp -R dist/DeskCam.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname DeskCam -srcfolder dmg -ov -format UDZO DeskCam.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskCam-mac
+          path: DeskCam.dmg
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DeskCam.dmg

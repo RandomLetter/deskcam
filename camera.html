@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DeskCam</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: #111; color: #eee;
+    font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  main { position: relative; flex: 1; min-height: 0; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #message {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 32px; text-align: center; font-size: 18px; white-space: pre-line;
+  }
+  #message:empty { display: none; }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #flash.on { animation: flash .25s ease-out; }
+  @keyframes flash { from { opacity: .8; } to { opacity: 0; } }
+  #clock {
+    position: absolute; top: 14px; left: 14px; padding: 4px 12px; border-radius: 999px;
+    background: #c62828; font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  #fps {
+    position: absolute; top: 14px; right: 14px; padding: 4px 12px; border-radius: 999px;
+    background: rgba(0, 0, 0, .6); color: #ddd; font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  footer { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: #1b1b1b; flex-wrap: wrap; }
+  button, select {
+    height: 42px; padding: 0 16px; border: 1px solid #444; border-radius: 8px;
+    background: #2b2b2b; color: inherit; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled), select:hover { background: #383838; }
+  button:disabled { opacity: .4; cursor: default; }
+  #snap { background: #1565c0; border-color: #1565c0; font-weight: 600; }
+  #snap:hover:not(:disabled) { background: #1976d2; }
+  #record { background: #c62828; border-color: #c62828; font-weight: 600; min-width: 96px; }
+  #record:hover:not(:disabled) { background: #d32f2f; }
+  #status { flex: 1; min-width: 180px; color: #bbb; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  select { max-width: 240px; }
+  #gear { width: 42px; padding: 0; font-size: 20px; }
+  dialog {
+    width: min(520px, calc(100vw - 32px)); padding: 20px; border: 1px solid #444; border-radius: 12px;
+    background: #1b1b1b; color: inherit;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  dialog h2 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
+  .field { display: block; margin-bottom: 14px; color: #bbb; }
+  .row { display: flex; gap: 8px; margin-top: 4px; }
+  .field input[type=text], .field select {
+    flex: 1; width: 100%; min-width: 0; max-width: none; height: 42px; padding: 0 12px; margin-top: 4px;
+    border: 1px solid #444; border-radius: 8px; background: #2b2b2b; color: #eee; font: inherit;
+  }
+  .row input[type=text] { margin-top: 0; }
+  .check { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .check input { width: 18px; height: 18px; }
+  #settingsError { min-height: 20px; margin: 0 0 8px; color: #ef9a9a; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  #saveSettings { background: #1565c0; border-color: #1565c0; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <video id="video" autoplay muted playsinline></video>
+  <div id="message">Starting…</div>
+  <div id="flash"></div>
+  <div id="clock" hidden>0:00</div>
+  <div id="fps" hidden></div>
+</main>
+<footer>
+  <button id="snap" disabled title="Space">Snap</button>
+  <button id="record" disabled title="R">Record</button>
+  <span id="status"></span>
+  <select id="camera" hidden aria-label="Camera"></select>
+  <button id="folder">Open folder</button>
+  <button id="gear" title="Settings" aria-label="Settings">⚙</button>
+</footer>
+
+<dialog id="settings">
+  <form id="settingsForm">
+    <h2>Settings</h2>
+    <label class="field">Save photos to
+      <span class="row">
+        <input type="text" id="photoFolder" required>
+        <button type="button" class="browse" data-for="photoFolder">Browse</button>
+      </span>
+    </label>
+    <label class="field">Save videos to
+      <span class="row">
+        <input type="text" id="videoFolder" required>
+        <button type="button" class="browse" data-for="videoFolder">Browse</button>
+      </span>
+    </label>
+    <label class="field">Resolution
+      <select id="resolution">
+        <option value="4096x3072">13MP · 4096×3072 (full view)</option>
+        <option value="3840x2160">4K · 3840×2160 (widescreen)</option>
+        <option value="3264x2448">8MP · 3264×2448 (full view)</option>
+        <option value="2592x1952">5MP · 2592×1952 (full view)</option>
+        <option value="1920x1080">1080p · 1920×1080 (widescreen)</option>
+        <option value="1280x720">720p · 1280×720 (widescreen)</option>
+      </select>
+    </label>
+    <label class="field">Video shape
+      <select id="videoShape">
+        <option value="full">Full view (same as preview)</option>
+        <option value="wide">Widescreen (crops top and bottom)</option>
+      </select>
+    </label>
+    <label class="field">Photo format
+      <select id="photoFormat">
+        <option value="jpg">JPEG (smaller files)</option>
+        <option value="png">PNG (no compression loss, larger files)</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="sound"> Record sound from the camera's mic</label>
+    <p id="settingsError"></p>
+    <div class="actions">
+      <button type="button" id="cancelSettings">Cancel</button>
+      <button type="submit" id="saveSettings">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('video'), snap = $('snap'), record = $('record'), picker = $('camera');
+const IPEVO = /ipevo|vz-?r/i;
+const WAITING = 'Waiting for the camera…\nIt will appear here as soon as Windows detects it.';
+
+let stream = null, recorder = null, uploads = Promise.resolve(), settings = null;
+let chosen = null, connecting = false, reconnect = false, clockTimer = null;
+
+const setStatus = text => { $('status').textContent = text; $('status').title = text; };
+const setMessage = text => { $('message').textContent = text; };
+const enable = on => { snap.disabled = record.disabled = !on; };
+const isLive = () => stream?.getVideoTracks()[0]?.readyState === 'live';
+
+async function post(path, body) {
+  const response = await fetch(path, { method: 'POST', body });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+// Counts the frames actually drawn in the preview, once a second.
+let framesShown = 0, countedSince = performance.now();
+const countFrame = () => { framesShown++; video.requestVideoFrameCallback(countFrame); };
+video.requestVideoFrameCallback(countFrame);
+setInterval(() => {
+  const now = performance.now();
+  const fps = framesShown * 1000 / (now - countedSince);
+  framesShown = 0;
+  countedSince = now;
+  $('fps').hidden = !isLive();
+  if (!isLive()) return;
+  const { width, height, frameRate } = stream.getVideoTracks()[0].getSettings();
+  $('fps').textContent = `${fps.toFixed(1)} fps · camera max ${Math.round(frameRate)} · ${width}×${height}`;
+}, 1000);
+
+async function listDevices() {
+  const all = await navigator.mediaDevices.enumerateDevices();
+  return {
+    cameras: all.filter(d => d.kind === 'videoinput'),
+    mics: all.filter(d => d.kind === 'audioinput'),
+  };
+}
+
+async function askPermission() {
+  const request = c => navigator.mediaDevices.getUserMedia(c);
+  const granted = await request({ video: true, audio: true }).catch(() => request({ video: true }));
+  granted.getTracks().forEach(t => t.stop());
+}
+
+function release() {
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null;
+  video.srcObject = null;
+  enable(false);
+}
+
+function showCameras(cameras, selectedId) {
+  picker.replaceChildren(...cameras.map(c => new Option(c.label || 'Camera', c.deviceId)));
+  picker.value = selectedId;
+  picker.hidden = cameras.length < 2;
+}
+
+function describeError(error) {
+  if (error.name === 'NotAllowedError') {
+    return /Mac/.test(navigator.platform)
+      ? 'Camera access is blocked.\nTurn on DeskCam in System Settings → Privacy & Security → Camera, then reopen the app.'
+      : 'Camera access is blocked.\nAllow it in the address permissions for this window, then reopen the app.';
+  }
+  if (error.name === 'NotReadableError') return 'The camera is being used by another app.\nClose that app and this window will connect.';
+  return `Could not open the camera.\n${error.message}`;
+}
+
+async function connect() {
+  if (connecting) { reconnect = true; return; }
+  connecting = true;
+  try {
+    let { cameras, mics } = await listDevices();
+    // Until access is allowed, Chrome lists cameras with no name or ID, so ask first.
+    if (cameras.length && !cameras.some(c => c.label)) {
+      await askPermission();
+      ({ cameras, mics } = await listDevices());
+    }
+    cameras = cameras.filter(c => c.deviceId);
+    if (!cameras.length) {
+      release();
+      picker.hidden = true;
+      setStatus('');
+      setMessage(WAITING);
+      return;
+    }
+
+    const camera = cameras.find(c => c.deviceId === chosen)
+      ?? cameras.find(c => IPEVO.test(c.label))
+      ?? cameras[0];
+    showCameras(cameras, camera.deviceId);
+
+    const current = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+    if (isLive() && current === camera.deviceId) return;
+
+    release();
+    setMessage('Connecting…');
+    // Only the camera's own mic is used, so a headset is never recorded by surprise.
+    const mic = settings.sound && IPEVO.test(camera.label) ? mics.find(m => IPEVO.test(m.label)) : null;
+    const [wantWidth, wantHeight] = settings.resolution.split('x').map(Number);
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: camera.deviceId }, width: { ideal: wantWidth }, height: { ideal: wantHeight } },
+      audio: mic ? { deviceId: { exact: mic.deviceId } } : false,
+    });
+    stream.getVideoTracks()[0].addEventListener('ended', onCameraLost);
+    video.srcObject = stream;
+    await video.play();
+    // The first frames after a cold start are black until the exposure settles.
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    setMessage('');
+    enable(true);
+    const { width, height } = stream.getVideoTracks()[0].getSettings();
+    setStatus(`${camera.label} · ${width}×${height} · ${mic ? 'with sound' : 'no sound'}`);
+  } catch (error) {
+    release();
+    setMessage(describeError(error));
+  } finally {
+    connecting = false;
+    if (reconnect) { reconnect = false; connect(); }
+  }
+}
+
+function onCameraLost() {
+  if (recorder) stopRecording();
+  release();
+  setStatus('Camera disconnected');
+  setMessage(WAITING);
+  connect();
+}
+
+async function takePhoto() {
+  if (snap.disabled) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const flash = $('flash');
+  flash.classList.remove('on');
+  void flash.offsetWidth;
+  flash.classList.add('on');
+  try {
+    const type = settings.photoFormat === 'png' ? 'image/png' : 'image/jpeg';
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.95));
+    const { name } = await post(`/still?ext=${settings.photoFormat}`, blob);
+    setStatus(`Saved ${name}`);
+  } catch (error) {
+    setStatus(`Photo not saved: ${error.message}`);
+  }
+}
+
+function pickFormat() {
+  const audio = stream.getAudioTracks().length > 0;
+  return [
+    `video/mp4;codecs=avc1.640033${audio ? ',mp4a.40.2' : ''}`,
+    'video/mp4',
+    'video/webm',
+  ].find(type => MediaRecorder.isTypeSupported(type));
+}
+
+function startClock() {
+  const clock = $('clock'), started = Date.now();
+  const tick = () => {
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    const m = Math.floor(seconds / 60), s = String(seconds % 60).padStart(2, '0');
+    clock.textContent = m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${s}` : `${m}:${s}`;
+  };
+  tick();
+  clock.hidden = false;
+  clockTimer = setInterval(tick, 500);
+}
+
+function stopClock() {
+  clearInterval(clockTimer);
+  $('clock').hidden = true;
+}
+
+async function startRecording() {
+  record.disabled = true;
+  try {
+    const mimeType = pickFormat();
+    const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+    const { name } = await post(`/start?ext=${ext}`);
+    let failed = null;
+    // Without crop-and-scale the MP4 encoder rejects 4:3 sizes. Preview and photos keep the full view.
+    const scaled = stream.getVideoTracks()[0].clone();
+    const { width, height } = scaled.getSettings();
+    const widescreen = settings.videoShape === 'wide' && width / height < 1.5;
+    await scaled.applyConstraints({
+      width,
+      height: widescreen ? Math.round(width * 9 / 16) : height,
+      resizeMode: 'crop-and-scale',
+    });
+    const source = new MediaStream([scaled, ...stream.getAudioTracks()]);
+    recorder = new MediaRecorder(source, { mimeType, videoBitsPerSecond: 20_000_000 });
+    recorder.ondataavailable = e => {
+      if (!e.data.size) return;
+      uploads = uploads.then(() => post('/chunk', e.data)).catch(error => { failed = error; });
+    };
+    recorder.onerror = e => { failed = e.error; stopRecording(); };
+    recorder.onstop = async () => {
+      scaled.stop();
+      await uploads;
+      await post('/stop').catch(error => { failed ??= error; });
+      setStatus(failed ? `Recording problem: ${failed.message}` : `Saved ${name}`);
+      recorder = null;
+      record.textContent = 'Record';
+      record.disabled = !isLive();
+    };
+    recorder.start(1000);
+    record.textContent = 'Stop';
+    setStatus(`Recording to ${name}`);
+    startClock();
+  } catch (error) {
+    recorder = null;
+    post('/stop').catch(() => {});
+    setStatus(`Could not record: ${error.message}`);
+  }
+  record.disabled = !isLive();
+}
+
+function stopRecording() {
+  stopClock();
+  record.disabled = true;
+  if (recorder?.state === 'recording') recorder.stop();
+}
+
+function updateShapeChoice() {
+  const [width, height] = $('resolution').value.split('x').map(Number);
+  $('videoShape').disabled = width / height > 1.5;
+}
+
+function openSettings() {
+  if (recorder) { setStatus('Stop recording to change settings'); return; }
+  for (const key of ['photoFolder', 'videoFolder', 'resolution', 'videoShape', 'photoFormat']) $(key).value = settings[key];
+  $('sound').checked = settings.sound;
+  $('settingsError').textContent = '';
+  updateShapeChoice();
+  $('settings').showModal();
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const previous = settings;
+  try {
+    settings = await post('/settings', JSON.stringify({
+      photoFolder: $('photoFolder').value.trim(),
+      videoFolder: $('videoFolder').value.trim(),
+      resolution: $('resolution').value,
+      videoShape: $('videoShape').value,
+      photoFormat: $('photoFormat').value,
+      sound: $('sound').checked,
+    }));
+  } catch (error) {
+    $('settingsError').textContent = error.message;
+    return;
+  }
+  $('settings').close();
+  if (settings.resolution !== previous.resolution || settings.sound !== previous.sound) {
+    release();
+    connect();
+  }
+}
+
+async function browseFolder(event) {
+  const input = $(event.currentTarget.dataset.for);
+  try {
+    const { path } = await post('/choose-folder', input.value);
+    if (path) input.value = path;
+  } catch (error) {
+    $('settingsError').textContent = error.message;
+  }
+}
+
+snap.onclick = takePhoto;
+record.onclick = () => recorder ? stopRecording() : startRecording();
+$('folder').onclick = () => post('/folder').catch(error => setStatus(error.message));
+$('gear').onclick = openSettings;
+$('settingsForm').onsubmit = saveSettings;
+$('cancelSettings').onclick = () => $('settings').close();
+$('resolution').onchange = updateShapeChoice;
+document.querySelectorAll('.browse').forEach(button => { button.onclick = browseFolder; });
+picker.onchange = () => { chosen = picker.value; connect(); };
+navigator.mediaDevices.addEventListener('devicechange', () => { if (!recorder) connect(); });
+// Lets the app quit when this window closes; a reload reopens the page before it does.
+addEventListener('pagehide', () => navigator.sendBeacon('/bye'));
+
+document.addEventListener('keydown', e => {
+  if (e.repeat || e.target === picker || $('settings').open) return;
+  if (e.code === 'Space') { e.preventDefault(); takePhoto(); }
+  if (e.code === 'KeyR' && !record.disabled) record.click();
+});
+
+fetch('/settings').then(response => response.json()).then(saved => { settings = saved; connect(); });
+</script>
+</body>
+</html>
