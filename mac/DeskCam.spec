@@ -23,6 +23,7 @@ app = BUNDLE(
         # The browser window runs under DeskCam, so macOS asks on DeskCam's behalf.
         "NSCameraUsageDescription": "DeskCam shows and records your document camera.",
         "NSMicrophoneUsageDescription": "DeskCam records sound from your document camera's microphone.",
+        "NSAppleEventsUsageDescription": "DeskCam pastes the camera's picture into your chat app.",
         "NSDesktopFolderUsageDescription": "DeskCam saves photos and videos to the folder you choose.",
         "NSDocumentsFolderUsageDescription": "DeskCam saves photos and videos to the folder you choose.",
         "NSDownloadsFolderUsageDescription": "DeskCam saves photos and videos to the folder you choose.",

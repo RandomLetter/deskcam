@@ -40,13 +40,27 @@
   #snap:hover:not(:disabled) { background: #1976d2; }
   #record { background: #c62828; border-color: #c62828; font-weight: 600; min-width: 96px; }
   #record:hover:not(:disabled) { background: #d32f2f; }
+  #send { background: #6a1b9a; border-color: #6a1b9a; font-weight: 600; }
+  #send:hover:not(:disabled) { background: #7b1fa2; }
   #status { flex: 1; min-width: 180px; color: #bbb; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   select { max-width: 240px; }
   #gear { width: 42px; padding: 0; font-size: 20px; }
   dialog {
     width: min(520px, calc(100vw - 32px)); padding: 20px; border: 1px solid #444; border-radius: 12px;
+    max-height: calc(100vh - 32px); overflow-y: auto;
     background: #1b1b1b; color: inherit;
   }
+  dialog h3 { margin: 20px 0 10px; padding-top: 14px; border-top: 1px solid #333; font-size: 15px; font-weight: 600; }
+  .hint { margin: 0 0 12px; color: #999; font-size: 13px; }
+  .shortcut { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; color: #bbb; }
+  .shortcut span:first-child { width: 120px; }
+  .shortcut input {
+    width: 170px; height: 38px; padding: 0 12px; border: 1px solid #444; border-radius: 8px;
+    background: #2b2b2b; color: #eee; font: inherit; cursor: pointer; caret-color: transparent;
+  }
+  .shortcut input:focus { outline: 2px solid #1976d2; }
+  .shortcut .where { color: #888; font-size: 13px; }
+  .shortcut .where.taken { color: #ef9a9a; }
   dialog::backdrop { background: rgba(0, 0, 0, .6); }
   dialog h2 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
   .field { display: block; margin-bottom: 14px; color: #bbb; }
@@ -72,8 +86,9 @@
   <div id="fps" hidden></div>
 </main>
 <footer>
-  <button id="snap" disabled title="Space">Snap</button>
-  <button id="record" disabled title="R">Record</button>
+  <button id="snap" disabled>Snap</button>
+  <button id="record" disabled>Record</button>
+  <button id="send" disabled>Send to chat</button>
   <span id="status"></span>
   <select id="camera" hidden aria-label="Camera"></select>
   <button id="folder">Open folder</button>
@@ -118,6 +133,34 @@
       </select>
     </label>
     <label class="check"><input type="checkbox" id="sound"> Record sound from the camera's mic</label>
+
+    <h3>Send to chat</h3>
+    <p class="hint">Pastes the camera's picture into your open Claude or ChatGPT conversation.</p>
+    <label class="field">Send to
+      <select id="sendTarget">
+        <option value="last">The window I used last</option>
+        <option value="claude">Claude (app or browser tab)</option>
+        <option value="chatgpt">ChatGPT (app or browser tab)</option>
+      </select>
+    </label>
+    <label class="field">Picture size
+      <select id="sendSize">
+        <option value="1568">Small · 1568 px</option>
+        <option value="2048">Medium · 2048 px</option>
+        <option value="3072">Large · 3072 px</option>
+        <option value="0">Full camera resolution</option>
+      </select>
+    </label>
+    <label class="field">Message to include (optional)
+      <input type="text" id="sendMessage" placeholder="For example: Here's the next page">
+    </label>
+    <label class="check"><input type="checkbox" id="sendEnter"> Press Enter to send it right away</label>
+
+    <h3>Keyboard shortcuts</h3>
+    <p class="hint" id="shortcutHint"></p>
+    <div class="shortcut"><span>Take picture</span><input id="key-snap" readonly><span class="where"></span></div>
+    <div class="shortcut"><span>Record video</span><input id="key-record" readonly><span class="where"></span></div>
+    <div class="shortcut"><span>Send to chat</span><input id="key-send" readonly><span class="where"></span></div>
     <p id="settingsError"></p>
     <div class="actions">
       <button type="button" id="cancelSettings">Cancel</button>
@@ -128,8 +171,10 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const video = $('video'), snap = $('snap'), record = $('record'), picker = $('camera');
+const video = $('video'), snap = $('snap'), record = $('record'), send = $('send'), picker = $('camera');
 const IPEVO = /ipevo|vz-?r/i;
+const IS_MAC = /Mac/.test(navigator.platform);
+const ACTIONS = ['snap', 'record', 'send'];
 const WAITING = 'Waiting for the camera…\nIt will appear here as soon as Windows detects it.';
 
 let stream = null, recorder = null, uploads = Promise.resolve(), settings = null;
@@ -137,7 +182,7 @@ let chosen = null, connecting = false, reconnect = false, clockTimer = null;
 
 const setStatus = text => { $('status').textContent = text; $('status').title = text; };
 const setMessage = text => { $('message').textContent = text; };
-const enable = on => { snap.disabled = record.disabled = !on; };
+const enable = on => { snap.disabled = record.disabled = send.disabled = !on; };
 const isLive = () => stream?.getVideoTracks()[0]?.readyState === 'live';
 
 async function post(path, body) {
@@ -260,23 +305,97 @@ function onCameraLost() {
   connect();
 }
 
+// Reads the frame straight from the camera, so it is current even while another window covers this one.
+async function grabFrame(longest = 0) {
+  let frame = video;
+  if ('ImageCapture' in window) {
+    try { frame = await new ImageCapture(stream.getVideoTracks()[0]).grabFrame(); } catch {}
+  }
+  const width = frame.videoWidth ?? frame.width, height = frame.videoHeight ?? frame.height;
+  const scale = longest ? Math.min(1, longest / Math.max(width, height)) : 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
+  frame.close?.();
+  return canvas;
+}
+
+const toBlob = (canvas, type) => new Promise(resolve => canvas.toBlob(resolve, type, 0.95));
+
 async function takePhoto() {
   if (snap.disabled) return;
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
+  const canvas = await grabFrame();
   const flash = $('flash');
   flash.classList.remove('on');
   void flash.offsetWidth;
   flash.classList.add('on');
   try {
     const type = settings.photoFormat === 'png' ? 'image/png' : 'image/jpeg';
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.95));
-    const { name } = await post(`/still?ext=${settings.photoFormat}`, blob);
+    const { name } = await post(`/still?ext=${settings.photoFormat}`, await toBlob(canvas, type));
     setStatus(`Saved ${name}`);
   } catch (error) {
     setStatus(`Photo not saved: ${error.message}`);
+  }
+}
+
+// The server copies the picture, brings the chat window forward and pastes it there.
+async function sendToChat(fromShortcut = false) {
+  if (send.disabled) return;
+  send.disabled = true;
+  setStatus('Sending to chat…');
+  try {
+    const canvas = await grabFrame(settings.sendSize);
+    const png = await toBlob(canvas, 'image/png');
+    const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+    const query = `w=${canvas.width}&h=${canvas.height}&png=${png.size}&shortcut=${fromShortcut ? 1 : 0}`;
+    const { name } = await post(`/send?${query}`, new Blob([png, data]));
+    setStatus(`Sent to ${name}`);
+  } catch (error) {
+    setStatus(`Not sent: ${error.message}`);
+  }
+  send.disabled = !isLive();
+}
+
+function runAction(action, fromShortcut = false) {
+  if (action === 'snap') takePhoto();
+  if (action === 'record' && !record.disabled) record.click();
+  if (action === 'send') sendToChat(fromShortcut);
+}
+
+// Shortcuts are stored like "Ctrl+Alt+KeyS": modifiers, then the key's code.
+function comboFrom(event) {
+  if (/^(Control|Alt|Shift|Meta|OS)/.test(event.code)) return null;
+  const mods = [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Meta'];
+  return [...mods.filter(Boolean), event.code].join('+');
+}
+
+function describeCombo(combo) {
+  if (!combo) return 'None';
+  const parts = combo.split('+');
+  const key = parts.pop()
+    .replace(/^Key|^Digit/, '').replace(/^Numpad/, 'Num ')
+    .replace(/^Arrow(.*)/, (_, way) => ({ Left: '←', Right: '→', Up: '↑', Down: '↓' })[way]);
+  const names = IS_MAC
+    ? { Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘' }
+    : { Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Shift', Meta: 'Win' };
+  const mods = parts.map(m => names[m]);
+  return IS_MAC ? [...mods, key].join('') : [...mods, key].join('+');
+}
+
+const worksEverywhere = combo => !IS_MAC && !!combo && (/(^|\+)(Ctrl|Alt|Meta)\+/.test(combo) || /(^|\+)F\d+$/.test(combo));
+
+function describeWhere(combo, status) {
+  if (!combo) return ['', false];
+  if (status === 'taken') return ['Another app already uses this, so it only works in DeskCam', true];
+  return [worksEverywhere(combo) ? 'Works from any app' : 'Works while DeskCam is in front', false];
+}
+
+function showShortcuts() {
+  for (const action of ACTIONS) {
+    const combo = settings.shortcuts[action];
+    const button = { snap, record, send }[action];
+    button.title = combo ? `Shortcut: ${describeCombo(combo)}` : '';
   }
 }
 
@@ -361,13 +480,38 @@ function updateShapeChoice() {
   $('videoShape').disabled = width / height > 1.5;
 }
 
+function setShortcutBox(action, combo, status) {
+  const box = $(`key-${action}`);
+  box.dataset.combo = combo;
+  box.value = describeCombo(combo);
+  const [text, problem] = describeWhere(combo, status);
+  const where = box.nextElementSibling;
+  where.textContent = text;
+  where.classList.toggle('taken', problem);
+}
+
 function openSettings() {
   if (recorder) { setStatus('Stop recording to change settings'); return; }
-  for (const key of ['photoFolder', 'videoFolder', 'resolution', 'videoShape', 'photoFormat']) $(key).value = settings[key];
+  for (const key of ['photoFolder', 'videoFolder', 'resolution', 'videoShape', 'photoFormat', 'sendTarget', 'sendSize', 'sendMessage']) {
+    $(key).value = settings[key];
+  }
   $('sound').checked = settings.sound;
+  $('sendEnter').checked = settings.sendEnter;
+  for (const action of ACTIONS) setShortcutBox(action, settings.shortcuts[action], settings.shortcutStatus[action]);
   $('settingsError').textContent = '';
   updateShapeChoice();
+  // Global shortcuts are switched off while the dialog is open, so their keys can be typed into the boxes.
+  post('/pause-shortcuts').catch(() => {});
   $('settings').showModal();
+}
+
+function recordShortcut(event) {
+  const action = event.currentTarget.id.slice('key-'.length);
+  if (event.key === 'Tab' || event.key === 'Escape') return;
+  event.preventDefault();
+  if (event.key === 'Backspace' || event.key === 'Delete') { setShortcutBox(action, ''); return; }
+  const combo = comboFrom(event);
+  if (combo) setShortcutBox(action, combo);
 }
 
 async function saveSettings(event) {
@@ -381,12 +525,18 @@ async function saveSettings(event) {
       videoShape: $('videoShape').value,
       photoFormat: $('photoFormat').value,
       sound: $('sound').checked,
+      sendTarget: $('sendTarget').value,
+      sendSize: Number($('sendSize').value),
+      sendMessage: $('sendMessage').value.trim(),
+      sendEnter: $('sendEnter').checked,
+      shortcuts: Object.fromEntries(ACTIONS.map(action => [action, $(`key-${action}`).dataset.combo])),
     }));
   } catch (error) {
     $('settingsError').textContent = error.message;
     return;
   }
   $('settings').close();
+  showShortcuts();
   if (settings.resolution !== previous.resolution || settings.sound !== previous.sound) {
     release();
     connect();
@@ -405,6 +555,14 @@ async function browseFolder(event) {
 
 snap.onclick = takePhoto;
 record.onclick = () => recorder ? stopRecording() : startRecording();
+send.onclick = () => sendToChat();
+for (const action of ACTIONS) $(`key-${action}`).onkeydown = recordShortcut;
+$('settings').addEventListener('close', async () => {
+  try { settings = { ...settings, shortcutStatus: (await post('/resume-shortcuts')).shortcutStatus }; } catch {}
+});
+$('shortcutHint').textContent = 'Click a box, then press the keys you want. Backspace clears it. ' + (IS_MAC
+  ? 'On a Mac, shortcuts work while DeskCam is in front.'
+  : 'Shortcuts that use Ctrl, Alt or an F key also work while your chat window is in front.');
 $('folder').onclick = () => post('/folder').catch(error => setStatus(error.message));
 $('gear').onclick = openSettings;
 $('settingsForm').onsubmit = saveSettings;
@@ -418,11 +576,15 @@ addEventListener('pagehide', () => navigator.sendBeacon('/bye'));
 
 document.addEventListener('keydown', e => {
   if (e.repeat || e.target === picker || $('settings').open) return;
-  if (e.code === 'Space') { e.preventDefault(); takePhoto(); }
-  if (e.code === 'KeyR' && !record.disabled) record.click();
+  const combo = comboFrom(e);
+  const action = ACTIONS.find(a => combo && settings?.shortcuts[a] === combo);
+  if (action) { e.preventDefault(); runAction(action); }
 });
 
-fetch('/settings').then(response => response.json()).then(saved => { settings = saved; connect(); });
+// Shortcuts pressed while another app is in front arrive from the server.
+new EventSource('/events').onmessage = e => { if (settings && !$('settings').open) runAction(e.data, true); };
+
+fetch('/settings').then(response => response.json()).then(saved => { settings = saved; showShortcuts(); connect(); });
 </script>
 </body>
 </html>
