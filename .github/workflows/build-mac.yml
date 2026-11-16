@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14  # Apple Silicon
+    runs-on: macos-latest  # Always Apple Silicon; pinned versions get retired.
     steps:
       - uses: actions/checkout@v4
 
